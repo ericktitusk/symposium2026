@@ -5,3 +5,4 @@ mediapipe
 torch
 transformers
 pillow
+av
