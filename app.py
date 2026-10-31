@@ -8,7 +8,7 @@ from PIL import Image
 import streamlit as st
 from streamlit_webrtc import RTCConfiguration, VideoTransformerBase, webrtc_streamer
 import torch
-from transformers import AutoImageProcessor, SiglipForImageClassification
+from transformers import AutoImageProcessor, AutoModelForImageClassification
 
 st.set_page_config(page_title="SVS Symposium 20206- ASL Alphabet Recognition", layout="wide")
 st.title("🤟 Real-Time Multi-Hand ASL Recognition")
@@ -44,7 +44,7 @@ RTC_CONFIGURATION = RTCConfiguration(
 def load_models():
   model_name = "prithivMLmods/Alphabet-Sign-Language-Detection"
   processor = AutoImageProcessor.from_pretrained(model_name)
-  model = SiglipForImageClassification.from_pretrained(model_name)
+  model = AutoModelForImageClassification.from_pretrained(model_name)
   model.eval()
 
   base_options = python.BaseOptions(model_asset_path="hand_landmarker.task")
@@ -118,9 +118,18 @@ class ASLVideoProcessor(VideoTransformerBase):
     return av.VideoFrame.from_ndarray(img, format="bgr24")
 
 
-webrtc_streamer(
-    key="asl-stream",
-    video_processor_factory=ASLVideoProcessor,
-    rtc_configuration=RTC_CONFIGURATION,
-    media_stream_constraints={"video": True, "audio": False},
-)
+col1, col2, col3 = st.columns([1, 6, 1])
+
+with col2:
+  webrtc_streamer(
+      key="asl-stream",
+      video_processor_factory=ASLVideoProcessor,
+      rtc_configuration=RTC_CONFIGURATION,
+      media_stream_constraints={
+          "video": {
+              "width": {"ideal": 640},
+              "height": {"ideal": 480},
+          },
+          "audio": False,
+      },
+  )
