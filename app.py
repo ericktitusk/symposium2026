@@ -10,10 +10,29 @@ from streamlit_webrtc import RTCConfiguration, VideoTransformerBase, webrtc_stre
 import torch
 from transformers import AutoImageProcessor, SiglipForImageClassification
 
-st.set_page_config(page_title="ASL Alphabet Recognition", layout="wide")
+st.set_page_config(page_title="SVS Symposium 20206- ASL Alphabet Recognition", layout="wide")
 st.title("🤟 Real-Time Multi-Hand ASL Recognition")
 st.write("Cross-platform web application running on Streamlit Cloud.")
-
+# Force the video element to fit neatly on screen
+st.markdown(
+    """
+    <style>
+    div[data-testid="stWebRtcStreamer"] {
+        display: flex;
+        justify-content: center;
+        align-items: center;
+    }
+    div[data-testid="stWebRtcStreamer"] video {
+        max-width: 640px !important;
+        width: 100% !important;
+        height: auto !important;
+        border-radius: 12px;
+        box-shadow: 0px 4px 15px rgba(0,0,0,0.15);
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
 # 1. Google Public STUN server configuration for cloud NAT traversal
 RTC_CONFIGURATION = RTCConfiguration(
     {"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]}
