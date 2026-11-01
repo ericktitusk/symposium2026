@@ -1,12 +1,10 @@
 streamlit
 streamlit-webrtc
-opencv-python-headless
-mediapipe==0.10.14
-torch
-transformers
-torchvision
-transformers>=4.40.0
-sentencepiece
-protobuf
-pillow
 av
+opencv-python-headless
+mediapipe
+numpy
+huggingface_hub
+keras>=3
+tensorflow; sys_platform == "darwin"
+tensorflow-cpu; sys_platform != "darwin"

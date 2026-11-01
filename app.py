@@ -1,19 +1,28 @@
+import os
+
+os.environ.setdefault("KERAS_BACKEND", "tensorflow")
+
+import json
+import threading
+import time
+from collections import Counter, deque
+
 import av
 import cv2
+import keras
 import mediapipe as mp
+import numpy as np
+import streamlit as st
+from huggingface_hub import hf_hub_download
 from mediapipe.tasks import python
 from mediapipe.tasks.python import vision
-import numpy as np
-from PIL import Image
-import streamlit as st
 from streamlit_webrtc import RTCConfiguration, VideoTransformerBase, webrtc_streamer
-import torch
-from transformers import AutoImageProcessor, AutoModelForImageClassification
 
-st.set_page_config(page_title="SVS Symposium 20206- ASL Alphabet Recognition", layout="wide")
-st.title("🤟 Real-Time Multi-Hand ASL Recognition")
-st.write("Cross-platform web application running on Streamlit Cloud.")
-# Force the video element to fit neatly on screen
+st.set_page_config(page_title="SVS Symposium 2026 - ASL  Recognition", layout="wide")
+st.title("SVS Symposium 2026")
+st.write("STEAM - ASL Recognition")
+st.caption("Static letters A-Y (J and Z need motion and are not supported).")
+
 st.markdown(
     """
     <style>
@@ -33,103 +42,161 @@ st.markdown(
     """,
     unsafe_allow_html=True,
 )
-# 1. Google Public STUN server configuration for cloud NAT traversal
+
 RTC_CONFIGURATION = RTCConfiguration(
     {"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]}
 )
 
+REPO_ID = "AmimulBmeIU/asl-alphabet-classifier"
+LANDMARKER_PATH = "hand_landmarker.task"
+SMOOTHING_WINDOW = 7  # majority vote over the last N frames per hand
+CONF_GOOD = 70  # % threshold for green box
 
-# 2. Cache models so they don't reload on every interaction
+# Test switch (also available as a sidebar checkbox while the app runs)
+MIRROR_INPUT_DEFAULT = False
+
+
+def _find_file(filename):
+    """Use a local copy if present (works offline), else download from Hugging Face."""
+    if os.path.exists(filename):
+        return filename
+    try:
+        return hf_hub_download(REPO_ID, filename)
+    except Exception:
+        return hf_hub_download(REPO_ID, f"tfjs/{filename}")
+
+
 @st.cache_resource
-def load_models():
-  model_name = "prithivMLmods/Alphabet-Sign-Language-Detection"
-  processor = AutoImageProcessor.from_pretrained(model_name)
-  model = AutoModelForImageClassification.from_pretrained(model_name)
-  model.eval()
-
-  base_options = python.BaseOptions(model_asset_path="hand_landmarker.task")
-  options = vision.HandLandmarkerOptions(
-      base_options=base_options,
-      running_mode=vision.RunningMode.IMAGE,
-      num_hands=2,
-      min_hand_detection_confidence=0.5,
-      min_tracking_confidence=0.5,
-  )
-  detector = vision.HandLandmarker.create_from_options(options)
-  return processor, model, detector
+def load_classifier():
+    model = keras.saving.load_model(_find_file("model.keras"))
+    with open(_find_file("labels.json")) as f:
+        labels = json.load(f)
+    # Warm-up call so the first real frame is not slow
+    model(np.zeros((1, 63), dtype=np.float32), training=False)
+    return model, labels
 
 
-processor, model, detector = load_models()
+model, LABELS = load_classifier()
+model_lock = threading.Lock()
 
 
-# 3. Video processing callback
+def classify(landmarks, mirror_input=False):
+    """21 MediaPipe landmarks -> top 3 [(letter, confidence %), ...].
+
+    Input is raw x, y, z (63 values). With mirror_input=True the x values are
+    flipped (1 - x) before classifying, to test a left/right mismatch.
+    """
+    feats = np.array(
+        [[(1 - lm.x) if mirror_input else lm.x, lm.y, lm.z] for lm in landmarks],
+        dtype=np.float32,
+    ).reshape(1, 63)
+    with model_lock:
+        probs = np.asarray(model(feats, training=False))[0]
+    top = np.argsort(probs)[::-1][:3]
+    return [(LABELS[i], float(probs[i]) * 100) for i in top]
+
+
 class ASLVideoProcessor(VideoTransformerBase):
 
-  def __init__(self):
-    self.frame_count = 0
-    self.predictions = {}
+    def __init__(self):
+        # One landmarker per video session, in VIDEO mode (tracks between frames)
+        options = vision.HandLandmarkerOptions(
+            base_options=python.BaseOptions(model_asset_path=LANDMARKER_PATH),
+            running_mode=vision.RunningMode.VIDEO,
+            num_hands=2,
+            min_hand_detection_confidence=0.5,
+            min_tracking_confidence=0.5,
+        )
+        self.detector = vision.HandLandmarker.create_from_options(options)
+        self.history = {}  # hand index -> deque of recent letters
+        self.last_ts = 0
+        self.mirror_input = MIRROR_INPUT_DEFAULT
 
-  def recv(self, frame):
-    img = frame.to_ndarray(format="bgr24")
-    img = cv2.flip(img, 1)
-    h, w, _ = img.shape
-    rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+    def recv(self, frame):
+        img = frame.to_ndarray(format="bgr24")  # un-mirrored: this is what the model expects
+        h, w, _ = img.shape
+        rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
 
-    self.frame_count += 1
-    mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
-    results = detector.detect(mp_image)
+        # MediaPipe VIDEO mode needs strictly increasing timestamps (ms)
+        ts = int(time.monotonic() * 1000)
+        if ts <= self.last_ts:
+            ts = self.last_ts + 1
+        self.last_ts = ts
 
-    if results.hand_landmarks:
-      for i, landmarks in enumerate(results.hand_landmarks):
-        xs = [lm.x * w for lm in landmarks]
-        ys = [lm.y * h for lm in landmarks]
-        pad = 25
-        x1, y1 = max(0, int(min(xs)) - pad), max(0, int(min(ys)) - pad)
-        x2, y2 = min(w, int(max(xs)) + pad), min(h, int(max(ys)) + pad)
+        mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
+        results = self.detector.detect_for_video(mp_image, ts)
 
-        # Classify every 3rd frame to optimize CPU usage
-        if self.frame_count % 3 == 0 and (x2 - x1 > 20) and (y2 - y1 > 20):
-          hand_crop = Image.fromarray(rgb[y1:y2, x1:x2])
-          inputs = processor(images=hand_crop, return_tensors="pt")
-          with torch.no_grad():
-            logits = model(**inputs).logits
-            probs = torch.softmax(logits, dim=-1)
-            conf, idx = torch.max(probs, dim=-1)
+        # Mirror only for display, after detection
+        display = cv2.flip(img, 1)
 
-          self.predictions[i] = (
-              model.config.id2label[idx.item()],
-              conf.item() * 100,
-          )
+        seen = set()
+        for i, landmarks in enumerate(results.hand_landmarks or []):
+            seen.add(i)
+            top3 = classify(landmarks, self.mirror_input)
+            letter, conf = top3[0]
 
-        if i in self.predictions:
-          label, score = self.predictions[i]
-          color = (0, 255, 0) if score > 70 else (0, 165, 255)
-          cv2.rectangle(img, (x1, y1), (x2, y2), color, 2)
-          cv2.putText(
-              img,
-              f"{label} ({score:.0f}%)",
-              (x1, max(30, y1 - 10)),
-              cv2.FONT_HERSHEY_SIMPLEX,
-              0.8,
-              color,
-              2,
-          )
+            hist = self.history.setdefault(i, deque(maxlen=SMOOTHING_WINDOW))
+            hist.append(letter)
+            smooth_letter = Counter(hist).most_common(1)[0][0]
 
-    return av.VideoFrame.from_ndarray(img, format="bgr24")
+            # Box coordinates, mirrored to match the flipped display image
+            xs = [(1 - lm.x) * w for lm in landmarks]
+            ys = [lm.y * h for lm in landmarks]
+            pad = 25
+            x1, y1 = max(0, int(min(xs)) - pad), max(0, int(min(ys)) - pad)
+            x2, y2 = min(w, int(max(xs)) + pad), min(h, int(max(ys)) + pad)
 
+            color = (0, 255, 0) if conf > CONF_GOOD else (0, 165, 255)
+            cv2.rectangle(display, (x1, y1), (x2, y2), color, 2)
+            cv2.putText(
+                display,
+                f"{smooth_letter} ({conf:.0f}%)",
+                (x1, max(30, y1 - 10)),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.8,
+                color,
+                2,
+            )
+
+            # Top-3 guesses in the corner, one line per hand (for testing)
+            cv2.putText(
+                display,
+                f"Hand {i + 1}: " + " / ".join(f"{l} {c:.0f}" for l, c in top3),
+                (10, 30 + 30 * i),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.7,
+                (255, 255, 255),
+                2,
+            )
+
+        # Forget history for hands that disappeared
+        for k in list(self.history):
+            if k not in seen:
+                del self.history[k]
+
+        return av.VideoFrame.from_ndarray(display, format="bgr24")
+
+
+mirror_input = st.sidebar.checkbox(
+    "Mirror landmarks before classifying (test)", value=MIRROR_INPUT_DEFAULT
+)
 
 col1, col2, col3 = st.columns([1, 6, 1])
 
 with col2:
-  webrtc_streamer(
-      key="asl-stream",
-      video_processor_factory=ASLVideoProcessor,
-      rtc_configuration=RTC_CONFIGURATION,
-      media_stream_constraints={
-          "video": {
-              "width": {"ideal": 640},
-              "height": {"ideal": 480},
-          },
-          "audio": False,
-      },
-  )
+    ctx = webrtc_streamer(
+        key="asl-stream",
+        video_processor_factory=ASLVideoProcessor,
+        rtc_configuration=RTC_CONFIGURATION,
+        media_stream_constraints={
+            "video": {
+                "width": {"ideal": 640},
+                "height": {"ideal": 480},
+            },
+            "audio": False,
+        },
+    )
+
+# Apply the sidebar toggle to the running video processor
+if ctx.video_processor:
+    ctx.video_processor.mirror_input = mirror_input
