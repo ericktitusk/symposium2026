@@ -67,6 +67,62 @@ CELEBRATE_SECONDS = 3
 
 FONT = cv2.FONT_HERSHEY_SIMPLEX
 
+# Short tips (shown on the video during the spelling game)
+LETTER_TIPS = {
+    "A": "Fist, thumb along the side",
+    "B": "Flat hand, thumb across palm",
+    "C": "Curve the hand like a C",
+    "D": "Index up, others touch thumb",
+    "E": "Fingers curled onto thumb",
+    "F": "OK circle, 3 fingers up",
+    "G": "Sideways, index and thumb point",
+    "H": "Sideways, two fingers point",
+    "I": "Fist, pinky finger up",
+    "K": "V fingers, thumb between",
+    "L": "Index up, thumb out (an L)",
+    "M": "Thumb under 3 fingers",
+    "N": "Thumb under 2 fingers",
+    "O": "Fingertips meet thumb (an O)",
+    "P": "Like K, pointing down",
+    "Q": "Like G, pointing down",
+    "R": "Cross two fingers",
+    "S": "Fist, thumb across the front",
+    "T": "Fist, thumb between 2 fingers",
+    "U": "Two fingers up, together",
+    "V": "Two fingers up, apart (a V)",
+    "W": "Three fingers up, apart",
+    "X": "Fist, index finger hooked",
+    "Y": "Thumb and pinky out",
+}
+
+# Longer descriptions (shown in the ASL alphabet guide on the page)
+LETTER_GUIDE = {
+    "A": "Make a fist, with the thumb resting along the side of the index finger, pointing up.",
+    "B": "Hold the fingers straight up and close together, with the thumb folded across the palm.",
+    "C": "Curve the fingers and thumb into the shape of the letter C, leaving a gap between them.",
+    "D": "Point the index finger up. Curl the other fingers so their tips touch the tip of the thumb, making a small circle.",
+    "E": "Bend all the fingers down so their tips rest against the thumb, which is tucked underneath.",
+    "F": "Touch the tips of the index finger and thumb together to make a circle. Keep the other three fingers straight and slightly apart.",
+    "G": "Turn the hand sideways. Point the index finger and thumb forward, parallel to each other, with the other fingers closed.",
+    "H": "Turn the hand sideways. Point the index and middle fingers forward together, with the other fingers and thumb tucked in.",
+    "I": "Make a fist and point the little finger (pinky) straight up.",
+    "K": "Point the index and middle fingers up in a V shape. Place the thumb against the base of the middle finger, between the two fingers.",
+    "L": "Point the index finger up and the thumb out to the side, making the shape of the letter L. The other fingers are closed.",
+    "M": "Fold the index, middle and ring fingers down over the thumb, so the thumb is hidden under three fingers.",
+    "N": "Fold the index and middle fingers down over the thumb, so the thumb is hidden under two fingers.",
+    "O": "Curve all the fingers so their tips touch the tip of the thumb, making the shape of the letter O.",
+    "P": "Form the same shape as K, but tilt the hand so the fingers point downward.",
+    "Q": "Form the same shape as G, but tilt the hand so the index finger and thumb point downward.",
+    "R": "Cross the middle finger over the index finger. The other fingers are closed.",
+    "S": "Make a fist with the thumb wrapped across the front of the fingers.",
+    "T": "Make a fist with the thumb tucked between the index and middle fingers.",
+    "U": "Point the index and middle fingers up, held together. The thumb holds down the ring finger and little finger.",
+    "V": "Point the index and middle fingers up and spread them apart, like a peace sign.",
+    "W": "Point the index, middle and ring fingers up and spread them apart. The thumb holds down the little finger.",
+    "X": "Make a fist and bend the index finger into a hook.",
+    "Y": "Stretch out the thumb and the little finger. Fold the other three fingers down.",
+}
+
 
 @st.cache_resource
 def load_classifier():
@@ -198,6 +254,13 @@ class ASLVideoProcessor(VideoTransformerBase):
         else:
             hint = f"You spelled {word}!"
         cv2.putText(display, hint, (20, panel_top + 28), FONT, 0.8, (255, 255, 255), 2)
+        if self.idx < len(word):
+            tip = LETTER_TIPS.get(word[self.idx], "")
+            (hw, _), _ = cv2.getTextSize(hint, FONT, 0.8, 2)
+            tip_x = 20 + hw + 18
+            (tw1, _), _ = cv2.getTextSize(tip, FONT, 1.0, 1)
+            tip_scale = min(0.6, (w - tip_x - 10) / max(1, tw1))
+            cv2.putText(display, tip, (tip_x, panel_top + 26), FONT, tip_scale, (0, 220, 255), 1)
 
         # the word, letter by letter
         spacing = int(min(70, (w - 40) / max(1, len(word))))
@@ -379,6 +442,16 @@ The app finds 21 key points on each hand (knuckles, fingertips and wrist) and a 
 neural network reads the shape of those points to predict the letter, live, for up to two hands.
 """
     )
+
+    with st.expander("ASL alphabet guide: how to make each letter"):
+        st.markdown(
+            "Face the palm toward the camera (or slightly to the side) and keep the whole hand in view.\n\n"
+            + "\n".join(f"- **{k}**: {v}" for k, v in LETTER_GUIDE.items())
+            + "\n\n**J** and **Z** are drawn in the air with a moving hand, so this app cannot read them."
+            + "\n\n**Letters that look alike:** A, E, M, N, S and T are all fists, so keep the thumb position clear. "
+            "K and P (and G and Q) are the same shape pointing in different directions. "
+            "U keeps the two fingers together and V spreads them apart."
+        )
 
     with st.expander("Fun facts about ASL"):
         st.markdown(
