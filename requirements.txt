@@ -4,7 +4,3 @@ av
 opencv-python-headless
 mediapipe
 numpy
-huggingface_hub
-keras>=3
-tensorflow; sys_platform == "darwin"
-tensorflow-cpu; sys_platform != "darwin"

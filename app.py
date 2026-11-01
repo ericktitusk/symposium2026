@@ -1,22 +1,18 @@
-import os
-
-os.environ.setdefault("KERAS_BACKEND", "tensorflow")
-
 import json
-import threading
+import os
 import time
 from collections import Counter, deque
 
 import av
 import cv2
-import keras
 import mediapipe as mp
 import numpy as np
 import streamlit as st
-from huggingface_hub import hf_hub_download
 from mediapipe.tasks import python
 from mediapipe.tasks.python import vision
 from streamlit_webrtc import RTCConfiguration, VideoTransformerBase, webrtc_streamer
+
+from asl_numpy import NumpyMLP
 
 st.set_page_config(page_title="SVS Symposium 2026 - ASL  Recognition", layout="wide")
 st.title("SVS Symposium 2026")
@@ -47,7 +43,8 @@ RTC_CONFIGURATION = RTCConfiguration(
     {"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]}
 )
 
-REPO_ID = "AmimulBmeIU/asl-alphabet-classifier"
+WEIGHTS_PATH = "asl_weights.npz"  # created once by export_weights.py
+LABELS_PATH = "labels.json"
 LANDMARKER_PATH = "hand_landmarker.task"
 SMOOTHING_WINDOW = 7  # majority vote over the last N frames per hand
 CONF_GOOD = 70  # % threshold for green box
@@ -56,28 +53,23 @@ CONF_GOOD = 70  # % threshold for green box
 MIRROR_INPUT_DEFAULT = False
 
 
-def _find_file(filename):
-    """Use a local copy if present (works offline), else download from Hugging Face."""
-    if os.path.exists(filename):
-        return filename
-    try:
-        return hf_hub_download(REPO_ID, filename)
-    except Exception:
-        return hf_hub_download(REPO_ID, f"tfjs/{filename}")
-
-
 @st.cache_resource
 def load_classifier():
-    model = keras.saving.load_model(_find_file("model.keras"))
-    with open(_find_file("labels.json")) as f:
+    missing = [p for p in (WEIGHTS_PATH, LABELS_PATH) if not os.path.exists(p)]
+    if missing:
+        st.error(
+            f"Missing {', '.join(missing)}. Run `python export_weights.py` once "
+            "on your computer and commit the two files it creates."
+        )
+        st.stop()
+    mlp = NumpyMLP(WEIGHTS_PATH)
+    with open(LABELS_PATH) as f:
         labels = json.load(f)
-    # Warm-up call so the first real frame is not slow
-    model(np.zeros((1, 63), dtype=np.float32), training=False)
-    return model, labels
+    mlp.predict(np.zeros((1, 63), dtype=np.float32))  # warm-up
+    return mlp, labels
 
 
-model, LABELS = load_classifier()
-model_lock = threading.Lock()
+mlp, LABELS = load_classifier()
 
 
 def classify(landmarks, mirror_input=False):
@@ -90,8 +82,7 @@ def classify(landmarks, mirror_input=False):
         [[(1 - lm.x) if mirror_input else lm.x, lm.y, lm.z] for lm in landmarks],
         dtype=np.float32,
     ).reshape(1, 63)
-    with model_lock:
-        probs = np.asarray(model(feats, training=False))[0]
+    probs = mlp.predict(feats)[0]
     top = np.argsort(probs)[::-1][:3]
     return [(LABELS[i], float(probs[i]) * 100) for i in top]
 
